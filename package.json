@@ -1,6 +1,6 @@
 {
 	"name": "omp-ub-mode",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "Always-on ub-mode for OMP (oh-my-pi), Pi, and OpenCode. Injects the separately installed ub-mode skill before every agent start. The skill text is never vendored (upstream has no LICENSE).",
 	"type": "module",
 	"license": "MIT",

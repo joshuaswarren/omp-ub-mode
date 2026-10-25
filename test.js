@@ -222,18 +222,45 @@ test("opencode hook: empty prompt list gets the block as its own segment", async
 	assert.ok(output.system[0].includes(SKILL_BODY));
 });
 
-test("opencode hook: missing install emits visible diagnostic, not silence", async () => {
+test("opencode hook: error with preexisting system stays ONE segment", async () => {
 	const { transform, logCalls } = await captureOpenCodeTransform({
 		env: fixtureEnv("/nonexistent/ub-mode/SKILL.md"),
 	});
 	const output = { system: ["base prompt"] };
 	await transform({}, output);
-	assert.equal(output.system.length, 2);
-	assert.match(output.system[1], /\[omp-ub-mode\] ERROR: ub-mode skill not injected/);
-	assert.ok(!output.system[1].includes(SENTINEL), "error line must not look like an injection");
+	assert.equal(output.system.length, 1, "diagnostic must be appended into the existing segment");
+	assert.ok(output.system[0].startsWith("base prompt"), "existing content preserved at the head");
+	assert.match(output.system[0], /\[omp-ub-mode\] ERROR: ub-mode skill not injected/);
+	assert.ok(!output.system[0].includes(SENTINEL), "error line must not look like an injection");
 	assert.equal(logCalls.length, 1);
 	assert.equal(logCalls[0].body.level, "error");
 	// Second turn: diagnostic not duplicated.
 	await transform({}, output);
 	assert.equal(output.system.filter((s) => s.includes(DIAGNOSTIC_TAG)).length, 1);
+	assert.equal(output.system.length, 1);
+});
+
+test("opencode hook: error with no system segments pushes one diagnostic segment", async () => {
+	const { transform } = await captureOpenCodeTransform({ env: fixtureEnv("/nonexistent/ub-mode/SKILL.md") });
+	const output = { system: [] };
+	await transform({}, output);
+	assert.equal(output.system.length, 1);
+	assert.match(output.system[0], /\[omp-ub-mode\] ERROR/);
+});
+
+test("opencode hook: rejected async log still emits diagnostic and resolves", async () => {
+	const { transform, logCalls } = await captureOpenCodeTransform({
+		env: fixtureEnv("/nonexistent/ub-mode/SKILL.md"),
+	});
+	// Replace the recording logger with one whose promise rejects.
+	logCalls.length = 0;
+	const plugin = await opencodePlugin({
+		client: { app: { log: async () => { throw new Error("log sink down"); } } },
+		env: fixtureEnv("/nonexistent/ub-mode/SKILL.md"),
+	});
+	const output = { system: ["base prompt"] };
+	await assert.doesNotReject(() => plugin["experimental.chat.system.transform"]({}, output));
+	assert.equal(output.system.length, 1);
+	assert.match(output.system[0], /\[omp-ub-mode\] ERROR/);
+	assert.ok(!output.system[0].includes(SENTINEL));
 });
