@@ -1,0 +1,27 @@
+{
+	"name": "omp-ub-mode",
+	"version": "1.0.0",
+	"description": "Always-on ub-mode for OMP (oh-my-pi), Pi, and OpenCode. Injects the separately installed ub-mode skill before every agent start. The skill text is never vendored (upstream has no LICENSE).",
+	"type": "module",
+	"license": "MIT",
+	"author": {
+		"name": "Joshua Warren",
+		"url": "https://github.com/joshuaswarren"
+	},
+	"main": "./opencode.js",
+	"exports": {
+		".": "./opencode.js"
+	},
+	"files": ["core.js", "index.js", "opencode.js", "test.js", "README.md", "LICENSE"],
+	"pi": {
+		"extensions": ["./index.js"]
+	},
+	"scripts": {
+		"test": "node --test test.js"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/joshuaswarren/omp-ub-mode.git"
+	},
+	"keywords": ["omp", "oh-my-pi", "pi", "opencode", "ub-mode", "plugin", "tdd"]
+}
