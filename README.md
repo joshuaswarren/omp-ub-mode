@@ -30,14 +30,8 @@ nothing.
 omp plugin install github:joshuaswarren/omp-ub-mode
 ```
 
-If your `omp plugin install` build does not accept `github:` specs, add the
-dependency to `~/.omp/plugins/package.json` and install:
-
-```sh
-cd ~/.omp/plugins
-# package.json: "dependencies": { "omp-ub-mode": "github:joshuaswarren/omp-ub-mode#main", ... }
-bun install   # or: npm install
-```
+This is the verified install path (installs to `~/.omp/plugins/node_modules/`,
+registers in `~/.omp/plugins/package.json`).
 
 The package declares `pi.extensions` and OMP reads the `pi` manifest when no
 `omp` field exists, so no OMP-specific manifest is needed.
