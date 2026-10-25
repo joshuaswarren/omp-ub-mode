@@ -13,8 +13,10 @@
 
 import { DIAGNOSTIC_TAG, SENTINEL, buildBlock, loadSkillBody } from "./core.js";
 
-export default async ({ client, env, home } = {}) => ({
-	"experimental.chat.system.transform": async (_input, output) => {
+// Named export so stack traces and mutation/detection tools attribute
+// failures to this plugin instead of an anonymous arrow.
+export default async function ubModeOpenCodePlugin({ client, env, home } = {}) {
+	async function experimentalChatSystemTransform(_input, output) {
 		const appendOnce = (text, tag) => {
 			if (output.system.some((segment) => segment.includes(tag))) return;
 			if (output.system.length > 0) {
@@ -49,5 +51,7 @@ export default async ({ client, env, home } = {}) => ({
 			return;
 		}
 		appendOnce(block, SENTINEL);
-	},
-});
+	}
+
+	return { "experimental.chat.system.transform": experimentalChatSystemTransform };
+}

@@ -97,6 +97,19 @@ test("env override wins, accepts file or directory, and is authoritative", () =>
 	);
 });
 
+test("null env falls back to the default search paths", () => {
+	const home = tempHome();
+	const file = installSkill(home);
+	assert.equal(resolveSkillPath(null, home), file);
+	assert.deepEqual(skillSearchPaths(null, home), [
+		path.join(home, ".config", "skillshare", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".agents", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".claude", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".codex", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".openclaw", "skills", "ub-mode", "SKILL.md"),
+	]);
+});
+
 test("missing skill throws loudly and names every searched path", () => {
 	const home = tempHome();
 	assert.throws(
@@ -119,6 +132,21 @@ test("unreadable skill file surfaces a read error naming the path", () => {
 	};
 	try {
 		assert.throws(() => loadSkillBody({}, home), /cannot read .*EACCES/);
+	} finally {
+		fs.readFileSync = real;
+	}
+});
+
+test("non-Error read failures surface their value, not 'undefined'", () => {
+	const home = tempHome();
+	const file = installSkill(home);
+	const real = fs.readFileSync;
+	fs.readFileSync = (p, ...rest) => {
+		if (String(p) === file) throw "boom-string"; // non-Error throw shape
+		return real(p, ...rest);
+	};
+	try {
+		assert.throws(() => loadSkillBody({}, home), /cannot read .*boom-string/);
 	} finally {
 		fs.readFileSync = real;
 	}
@@ -158,6 +186,15 @@ test("omp hook: missing skill throws loudly (env override authoritative)", async
 	await assert.rejects(() => handler({ systemPrompt: ["base"] }), /SKILL\.md not found/);
 });
 
+test("omp hook: missing event object still injects (optional-chaining contract)", async () => {
+	const file = installSkill(tempHome());
+	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
+	const ok = await handler(); // no event argument at all
+	// omp wraps a string result as [string]; Pi passes strings natively.
+	assert.equal(typeof ok.systemPrompt, "string");
+	assert.ok(ok.systemPrompt.startsWith(SENTINEL));
+});
+
 test("omp hook: repeated calls never accumulate copies (fresh and re-entered bases)", async () => {
 	const file = installSkill(tempHome());
 	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
@@ -180,6 +217,14 @@ test("omp hook: compaction-like and subagent-like re-preparations re-apply", asy
 		assert.deepEqual(out.systemPrompt[0], "post-compaction base");
 		assert.match(out.systemPrompt[1], new RegExp("^" + SENTINEL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 	}
+});
+
+test("pi empty-string systemPrompt injects with no leading blank line", () => {
+	const file = installSkill(tempHome());
+	const out = inject("", fixtureEnv(file));
+	assert.ok(out.startsWith(SENTINEL), "empty base must not add a leading separator");
+	assert.equal(out.split(SENTINEL).length - 1, 1);
+	assert.ok(out.includes(SKILL_BODY), "skill body must be present verbatim");
 });
 
 // --- shared inject() string form (Pi) ---
