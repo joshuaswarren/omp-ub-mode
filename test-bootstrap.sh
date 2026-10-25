@@ -58,6 +58,11 @@ WORK="$TMP/work"
 mkdir -p "$WORK/scripts"
 git init --quiet "$WORK"
 git -C "$WORK" symbolic-ref HEAD refs/heads/main
+# every dependency the helper executes must be tracked and clean
+for dep in agent-workstation-refresh.pins install-ponytail.sh install-unclebob-tools.sh \
+	unclebob-tools-fixture.sh install-uml-viewer.sh; do
+	printf '# stub %s\n' "$dep" > "$WORK/scripts/$dep"
+done
 cat > "$WORK/scripts/agent-workstation-refresh.sh" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -158,6 +163,33 @@ rc=$?
 contains "modified helper message" "differs from HEAD" "$out"
 [ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "modified helper was not executed" || no "modified helper was not executed"
 git -C "$OPS" checkout --quiet -- scripts/agent-workstation-refresh.sh
+
+# only main is updated
+git -C "$OPS" checkout --quiet -b side-branch
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
+rc=$?
+[ "$rc" -eq 4 ] && ok "a non-main checkout is refused" || no "a non-main checkout is refused (exit $rc)"
+contains "a non-main checkout says why" "only updates main" "$out"
+git -C "$OPS" checkout --quiet main
+
+# every dependency the helper executes must be tracked and unmodified
+printf '\n# local edit\n' >> "$OPS/scripts/install-ponytail.sh"
+: > "$BOOTSTRAP_TEST_MARKER"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
+rc=$?
+[ "$rc" -eq 4 ] && ok "a dirty dependency is refused" || no "a dirty dependency is refused (exit $rc)"
+contains "a dirty dependency names the file" "install-ponytail.sh" "$out"
+[ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "the helper did not run with a dirty dependency" \
+	|| no "the helper did not run with a dirty dependency"
+git -C "$OPS" checkout --quiet -- scripts/install-ponytail.sh
+
+# an untracked dependency is refused too
+git -C "$OPS" rm --quiet --cached scripts/install-uml-viewer.sh
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
+rc=$?
+[ "$rc" -eq 4 ] && ok "an untracked dependency is refused" || no "an untracked dependency is refused (exit $rc)"
+contains "an untracked dependency says why" "not tracked by git" "$out"
+git -C "$OPS" reset --quiet --hard origin/main
 
 # arguments after -- reach the helper unchanged
 : > "$BOOTSTRAP_TEST_MARKER"

@@ -39,7 +39,7 @@ OPS_DIR=""
 EXPECT_ORIGIN=""
 HELPER_REL="scripts/agent-workstation-refresh.sh"
 DRY_RUN=0
-EXTRA_ARGS=""
+EXTRA_ARGS=()
 
 usage() {
 	__bootstrap_done=1
@@ -93,7 +93,7 @@ parse_args() {
 				usage; exit 0 ;;
 			--)
 				shift
-				EXTRA_ARGS="$*"
+				EXTRA_ARGS=("$@")
 				break ;;
 			*)
 				fail_usage "unknown argument: $1" ;;
@@ -115,6 +115,11 @@ normalize_origin() {
 	printf '%s' "$1" \
 	| sed -e 's#^[a-zA-Z+]*://##' -e 's#^git@##' -e 's#\.git$##' -e 's#/*$##' -e 's#:#/#' \
 	| tr '[:upper:]' '[:lower:]'
+}
+
+# Never print credentials that may live in a remote URL.
+redact_origin() {
+	printf '%s' "$1" | sed -e 's#^[^@/]*@##' -e 's#://[^@/]*@#://#'
 }
 
 origin_host() { printf '%s' "$1" | cut -d/ -f1; }
@@ -194,24 +199,46 @@ validate_origin() {
 			fail_check "origin mismatch: checkout points at host '$got_host' (resolves to '$got_resolved'), expected '$want_host' (resolves to '$want_resolved')"
 		fi
 	fi
-	log "origin verified: $origin (repo $got_path)"
+	log "origin verified: $(redact_origin "$origin") (repo $got_path)"
 }
 
 # --- update -----------------------------------------------------------------
 
-# Fast-forward only. A diverged or conflicted checkout is reported and left
-# exactly as it was: no stash, no reset, no force, no discarding local work.
+# Every file the helper will execute has to come from the reviewed tree:
+# tracked by git and identical to HEAD. A local edit anywhere in that set is
+# refused before the helper runs.
+DEPENDENCIES="scripts/agent-workstation-refresh.pins
+scripts/install-ponytail.sh
+scripts/install-unclebob-tools.sh
+scripts/unclebob-tools-fixture.sh
+scripts/install-uml-viewer.sh"
+
+validate_dependencies() {
+	for dep in "$HELPER_REL" $DEPENDENCIES; do
+		git_in ls-files --error-unmatch -- "$dep" >/dev/null 2>&1 \
+			|| fail_update "dependency is not tracked by git in the checkout: $dep"
+		git_in diff --quiet HEAD -- "$dep" \
+			|| fail_update "dependency differs from HEAD (locally modified): $dep"
+	done
+	log "dependencies verified: tracked and unmodified"
+}
+
+# Fast-forward only, on main only. A diverged or conflicted checkout is
+# reported and left exactly as it was: no stash, no reset, no force, no
+# discarding local work.
 update_checkout() {
 	branch="$(git_in symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 	if [ -z "$branch" ]; then
-		fail_update "checkout is in a detached HEAD state; check it out on a branch first"
+		fail_update "checkout is in a detached HEAD state; check it out on main first"
 	fi
+	[ "$branch" = "main" ] \
+		|| fail_update "checkout is on branch '$branch'; this entry point only updates main"
 	log "updating checkout on branch $branch"
-	if ! git_in fetch --quiet origin "$branch"; then
-		fail_update "git fetch origin $branch failed (no changes were made)"
+	if ! git_in fetch --quiet origin main; then
+		fail_update "git fetch origin main failed (no changes were made)"
 	fi
-	if ! git_in merge --ff-only "origin/$branch"; then
-		fail_update "fast-forward to origin/$branch failed: the checkout has local commits or conflicts; resolve it by hand (nothing was reset, stashed or discarded)"
+	if ! git_in merge --ff-only origin/main; then
+		fail_update "fast-forward to origin/main failed: the checkout has local commits or conflicts; resolve it by hand (nothing was reset, stashed or discarded)"
 	fi
 	log "checkout updated to $(git_in rev-parse --short HEAD)"
 }
@@ -220,10 +247,10 @@ update_checkout() {
 
 run_helper() {
 	log "running helper: $HELPER_REL"
-	if [ -n "$EXTRA_ARGS" ]; then
-		log "helper arguments: $EXTRA_ARGS"
-		# shellcheck disable=SC2086
-		bash "$OPS_DIR/$HELPER_REL" $EXTRA_ARGS
+	if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+		# the count only: arguments can carry secrets
+		log "passing ${#EXTRA_ARGS[@]} argument(s) to the helper"
+		bash "$OPS_DIR/$HELPER_REL" "${EXTRA_ARGS[@]}"
 	else
 		bash "$OPS_DIR/$HELPER_REL"
 	fi
@@ -240,6 +267,7 @@ main() {
 	validate_origin
 	update_checkout
 	validate_helper
+	validate_dependencies
 	if [ "$DRY_RUN" -eq 1 ]; then
 		log "dry run: helper not executed"
 	else

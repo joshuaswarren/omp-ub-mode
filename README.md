@@ -91,8 +91,15 @@ bash bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/
   conflicted checkout fails loudly and is left as it is: no stash, no reset,
   no force, no discarded local work.
 - The helper is executed only after every check above passed.
+- The update is main-only: the checkout must be on `main`, and only
+  `origin/main` is fetched. After the fast-forward every file the helper
+  executes (the helper, its pins, the ponytail installer, the analysis
+  installer and its fixture library, the viewer installer) must be tracked by
+  git and identical to `HEAD`; a local edit to any of them is refused.
 - Anything after `--` is passed to the helper unchanged, e.g.
-  `-- --dry-run` to preview the refresh without changing anything.
+  `-- --dry-run`. A dry run still fast-forwards the ops checkout — that is
+  the point of the update — and the helper's own dry run changes nothing but
+  its own scoped log.
 
 Download it into a private temporary file and verify its checksum before it is
 executed. Use `mktemp`, never a fixed name: a predictable path in a shared
