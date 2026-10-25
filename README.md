@@ -73,6 +73,39 @@ Plugins load at session start. Already-running sessions keep their current
 prompts until restarted; the injection applies to new sessions (and, inside a
 session, to every preparation from the moment the plugin is loaded).
 
+## Bootstrap (public entry point)
+
+`bootstrap.sh` updates an operator's own checkout of their ops repository and
+runs that repository's refresh helper. It never clones, never carries a
+credential, and never contacts another host: the checkout's existing git
+authentication is used as-is.
+
+```sh
+bash bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git
+```
+
+- `--ops-dir` must be an existing checkout under the invoking user's home.
+- `--expect-origin` must match that checkout's `origin`; a mismatch stops the
+  run before the helper is executed.
+- The update is `git fetch` + `git merge --ff-only` only. A diverged or
+  conflicted checkout fails loudly and is left as it is: no stash, no reset,
+  no force, no discarded local work.
+- The helper is executed only after every check above passed.
+
+Download it with a checksum so a truncated response can never be executed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joshuaswarren/omp-ub-mode/<commit>/bootstrap.sh -o /tmp/omp-ub-mode-bootstrap.sh \
+  && echo "<sha256>  /tmp/omp-ub-mode-bootstrap.sh" | sha256sum -c - \
+  && bash /tmp/omp-ub-mode-bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git
+```
+
+All of `bootstrap.sh`'s definitions come first and its single `main` call is
+last, so a truncated download can only stop the helper from running — it can
+never run a half-written helper.
+
+Check it with `bash test-bootstrap.sh` (Bash and coreutils only).
+
 ## Behavior check
 
 ```sh
