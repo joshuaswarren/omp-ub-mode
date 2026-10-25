@@ -9,11 +9,15 @@
 
 import { DIAGNOSTIC_TAG, SENTINEL, buildBlock, loadSkillBody } from "./core.js";
 
-export default async ({ client } = {}) => ({
+/**
+ * `env` / `home` are injection points for tests; production OpenCode passes
+ * only `{ client }` and the process defaults apply.
+ */
+export default async ({ client, env, home } = {}) => ({
 	"experimental.chat.system.transform": async (_input, output) => {
 		let block;
 		try {
-			block = buildBlock(loadSkillBody());
+			block = buildBlock(loadSkillBody(env, home));
 		} catch (err) {
 			// Visible diagnostics, not a hard gate: log the error and put a
 			// clearly-tagged line in the prompt so a missing install is obvious

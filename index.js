@@ -11,11 +11,15 @@
 
 import { inject } from "./core.js";
 
-export default function ubModeExtension(pi) {
+/**
+ * `options.env` / `options.home` are injection points for tests; production
+ * callers (omp, Pi) pass only the API and the defaults apply.
+ */
+export default function ubModeExtension(pi, options = {}) {
 	pi.on("before_agent_start", async (event) => ({
 		// Full replacement of the prompt, carrying every existing segment plus
 		// the ub-mode block. A missing skill file throws here and the runtime
 		// surfaces the error (OMP emitError) — no silent no-injection fallback.
-		systemPrompt: inject(event?.systemPrompt),
+		systemPrompt: inject(event?.systemPrompt, options.env, options.home),
 	}));
 }

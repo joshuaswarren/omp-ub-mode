@@ -2,12 +2,15 @@
 //
 // Tests drive the ACTUAL hook surfaces — the omp/Pi extension factory
 // (index.js) and the OpenCode transform hook (opencode.js) — not just the
-// shared helpers. Coverage: canonical-mandate prompts (which contain the
-// literal phrase "[ub-mode]") still receive the full skill body via the
-// dedicated sentinel; existing prompts preserved; duplicate guard on repeat;
-// loud failure when the skill is missing (env override is authoritative, no
-// silent fallback); frontmatter stripped; compaction-like / subagent-like
-// re-preparations.
+// shared helpers. Every hook test pins the skill location through the
+// factory's env/home injection points, so results never depend on what is
+// installed on the run host. Coverage: canonical-mandate prompts (which
+// contain the literal phrase "[ub-mode]") still receive the full skill body
+// via the dedicated sentinel; existing prompts preserved; duplicate guard on
+// repeat; loud failure when the skill is missing (env override is
+// authoritative, no silent fallback); frontmatter stripped; OpenCode appends
+// into the existing last segment (its adapter semantics); compaction-like /
+// subagent-like re-preparations.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -39,23 +42,31 @@ function installSkill(home, dirName = ".agents") {
 	return path.join(dir, "SKILL.md");
 }
 
+/** Env that authoritatively pins the fixture skill, independent of the host. */
+function fixtureEnv(file) {
+	return { OMP_UB_MODE_SKILL: file };
+}
+
 /** Installs the omp/Pi extension factory's before_agent_start handler. */
-function captureExtensionHandler() {
+function captureExtensionHandler(options) {
 	let handler;
-	ubModeExtension({
-		on: (event, h) => {
-			if (event === "before_agent_start") handler = h;
+	ubModeExtension(
+		{
+			on: (event, h) => {
+				if (event === "before_agent_start") handler = h;
+			},
 		},
-	});
+		options,
+	);
 	assert.equal(typeof handler, "function", "extension factory did not register before_agent_start");
 	return handler;
 }
 
 /** Installs the OpenCode transform hook. client.app.log records calls. */
-async function captureOpenCodeTransform() {
+async function captureOpenCodeTransform(options = {}) {
 	const logCalls = [];
 	const client = { app: { log: (body) => logCalls.push(body) } };
-	const plugin = await opencodePlugin({ client });
+	const plugin = await opencodePlugin({ client, ...options });
 	const transform = plugin["experimental.chat.system.transform"];
 	assert.equal(typeof transform, "function", "opencode plugin did not register the transform hook");
 	return { transform, logCalls };
@@ -103,10 +114,7 @@ test("unreadable skill file surfaces a read error naming the path", () => {
 	const file = installSkill(home);
 	const real = fs.readFileSync;
 	fs.readFileSync = (p, ...rest) => {
-		if (String(p) === file) {
-			const e = new Error("EACCES: permission denied");
-			throw e;
-		}
+		if (String(p) === file) throw new Error("EACCES: permission denied");
 		return real(p, ...rest);
 	};
 	try {
@@ -116,7 +124,7 @@ test("unreadable skill file surfaces a read error naming the path", () => {
 	}
 });
 
-test("frontmatter is stripped from the injected body", () => {
+test("frontmatter is stripped from the injected body, including the blank line after it", () => {
 	const home = tempHome();
 	installSkill(home);
 	assert.equal(loadSkillBody({}, home), SKILL_BODY);
@@ -125,9 +133,8 @@ test("frontmatter is stripped from the injected body", () => {
 // --- omp / Pi extension hook (actual factory-registered handler) ---
 
 test("omp hook: mandate-carrying prompt still gets the full skill body appended", async () => {
-	const home = tempHome();
-	installSkill(home);
-	const handler = captureExtensionHandler();
+	const file = installSkill(tempHome());
+	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
 	const result = await handler({ type: "before_agent_start", prompt: "hi", systemPrompt: ["base", CARRIER_MANDATE] });
 	assert.ok(result && Array.isArray(result.systemPrompt));
 	const out = result.systemPrompt;
@@ -139,29 +146,21 @@ test("omp hook: mandate-carrying prompt still gets the full skill body appended"
 });
 
 test("omp hook: empty base injects standalone block", async () => {
-	installSkill(tempHome());
-	const handler = captureExtensionHandler();
+	const file = installSkill(tempHome());
+	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
 	const ok = await handler({ systemPrompt: [] });
 	assert.equal(ok.systemPrompt.length, 1);
 	assert.ok(ok.systemPrompt[0].startsWith(SENTINEL));
 });
 
 test("omp hook: missing skill throws loudly (env override authoritative)", async () => {
-	const handler = captureExtensionHandler();
-	const saved = process.env.OMP_UB_MODE_SKILL;
-	process.env.OMP_UB_MODE_SKILL = "/nonexistent/ub-mode/SKILL.md";
-	try {
-		await assert.rejects(() => handler({ systemPrompt: ["base"] }), /SKILL\.md not found/);
-	} finally {
-		if (saved === undefined) delete process.env.OMP_UB_MODE_SKILL;
-		else process.env.OMP_UB_MODE_SKILL = saved;
-	}
+	const handler = captureExtensionHandler({ env: fixtureEnv("/nonexistent/ub-mode/SKILL.md") });
+	await assert.rejects(() => handler({ systemPrompt: ["base"] }), /SKILL\.md not found/);
 });
 
 test("omp hook: repeated calls never accumulate copies (fresh and re-entered bases)", async () => {
-	const home = tempHome();
-	installSkill(home);
-	const handler = captureExtensionHandler();
+	const file = installSkill(tempHome());
+	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
 	for (let turn = 0; turn < 4; turn++) {
 		const fresh = await handler({ systemPrompt: [CARRIER_MANDATE] }); // real per-preparation rebuild
 		assert.equal(fresh.systemPrompt.filter((s) => s.includes(SENTINEL)).length, 1);
@@ -172,9 +171,8 @@ test("omp hook: repeated calls never accumulate copies (fresh and re-entered bas
 });
 
 test("omp hook: compaction-like and subagent-like re-preparations re-apply", async () => {
-	const home = tempHome();
-	installSkill(home);
-	const handler = captureExtensionHandler();
+	const file = installSkill(tempHome());
+	const handler = captureExtensionHandler({ env: fixtureEnv(file) });
 	for (const out of [
 		await handler({ systemPrompt: ["post-compaction base"] }),
 		await handler({ systemPrompt: ["post-compaction base"] }),
@@ -187,47 +185,55 @@ test("omp hook: compaction-like and subagent-like re-preparations re-apply", asy
 // --- shared inject() string form (Pi) ---
 
 test("pi string systemPrompt: preserved, extended once, guard idempotent", () => {
-	const home = tempHome();
-	installSkill(home);
-	const out = inject(CARRIER_MANDATE, {}, home);
+	const file = installSkill(tempHome());
+	const out = inject(CARRIER_MANDATE, fixtureEnv(file));
 	assert.ok(out.startsWith(CARRIER_MANDATE + "\n\n" + SENTINEL));
+	assert.ok(out.includes(SKILL_BODY), "skill body must be present verbatim");
 	assert.equal(out.split(SENTINEL).length - 1, 1);
-	assert.equal(inject(out, {}, home), out);
+	assert.equal(inject(out, fixtureEnv(file)), out);
 });
 
 // --- OpenCode transform hook (actual plugin hook) ---
 
-test("opencode hook: mandate-carrying prompt gets body appended; repeat guarded", async () => {
-	const home = tempHome();
-	installSkill(home);
-	const { transform } = await captureOpenCodeTransform();
+test("opencode hook: mandate prompt gets body appended into the last segment; repeat guarded", async () => {
+	const file = installSkill(tempHome());
+	const { transform } = await captureOpenCodeTransform({ env: fixtureEnv(file) });
 	const output = { system: [CARRIER_MANDATE] };
 	await transform({}, output);
-	assert.equal(output.system.length, 2);
-	assert.equal(output.system[0], CARRIER_MANDATE);
-	assert.ok(output.system[1].includes(SKILL_BODY));
-	const before = output.system.join("\n");
+	// OpenCode adapter semantics: appended into the EXISTING last segment, not
+	// pushed as a new one (mirrors ponytail's transform).
+	assert.equal(output.system.length, 1);
+	assert.ok(output.system[0].startsWith(CARRIER_MANDATE), "existing content preserved at the head");
+	assert.ok(output.system[0].includes(SKILL_BODY), "skill body must be present verbatim");
+	assert.equal(output.system[0].split(SENTINEL).length - 1, 1);
+	const before = output.system[0];
 	await transform({}, output);
-	assert.equal(output.system.join("\n"), before, "repeat transform must not append a second copy");
+	assert.equal(output.system.length, 1, "repeat transform must not add segments");
+	assert.equal(output.system[0], before, "repeat transform must not append a second copy");
+});
+
+test("opencode hook: empty prompt list gets the block as its own segment", async () => {
+	const file = installSkill(tempHome());
+	const { transform } = await captureOpenCodeTransform({ env: fixtureEnv(file) });
+	const output = { system: [] };
+	await transform({}, output);
+	assert.equal(output.system.length, 1);
+	assert.ok(output.system[0].startsWith(SENTINEL));
+	assert.ok(output.system[0].includes(SKILL_BODY));
 });
 
 test("opencode hook: missing install emits visible diagnostic, not silence", async () => {
-	const saved = process.env.OMP_UB_MODE_SKILL;
-	process.env.OMP_UB_MODE_SKILL = "/nonexistent/ub-mode/SKILL.md";
-	try {
-		const { transform, logCalls } = await captureOpenCodeTransform();
-		const output = { system: ["base prompt"] };
-		await transform({}, output);
-		assert.equal(output.system.length, 2);
-		assert.match(output.system[1], /\[omp-ub-mode\] ERROR: ub-mode skill not injected/);
-		assert.ok(!output.system[1].includes(SENTINEL), "error line must not look like an injection");
-		assert.equal(logCalls.length, 1);
-		assert.equal(logCalls[0].body.level, "error");
-		// Second turn: diagnostic not duplicated.
-		await transform({}, output);
-		assert.equal(output.system.filter((s) => s.includes(DIAGNOSTIC_TAG)).length, 1);
-	} finally {
-		if (saved === undefined) delete process.env.OMP_UB_MODE_SKILL;
-		else process.env.OMP_UB_MODE_SKILL = saved;
-	}
+	const { transform, logCalls } = await captureOpenCodeTransform({
+		env: fixtureEnv("/nonexistent/ub-mode/SKILL.md"),
+	});
+	const output = { system: ["base prompt"] };
+	await transform({}, output);
+	assert.equal(output.system.length, 2);
+	assert.match(output.system[1], /\[omp-ub-mode\] ERROR: ub-mode skill not injected/);
+	assert.ok(!output.system[1].includes(SENTINEL), "error line must not look like an injection");
+	assert.equal(logCalls.length, 1);
+	assert.equal(logCalls[0].body.level, "error");
+	// Second turn: diagnostic not duplicated.
+	await transform({}, output);
+	assert.equal(output.system.filter((s) => s.includes(DIAGNOSTIC_TAG)).length, 1);
 });

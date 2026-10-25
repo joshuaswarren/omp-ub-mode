@@ -74,7 +74,7 @@ export function loadSkillBody(env = process.env, home = os.homedir()) {
 }
 
 export function stripFrontmatter(text) {
-	const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
+	const m = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)+/.exec(text);
 	return m ? text.slice(m[0].length) : text;
 }
 
