@@ -62,7 +62,7 @@ cat > "$WORK/scripts/agent-workstation-refresh.sh" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 : "${BOOTSTRAP_TEST_MARKER:?}"
-printf 'helper ran\n' >> "$BOOTSTRAP_TEST_MARKER"
+printf 'helper ran %s\n' "$*" >> "$BOOTSTRAP_TEST_MARKER"
 printf 'stub helper ok\n'
 EOF
 chmod +x "$WORK/scripts/agent-workstation-refresh.sh"
@@ -131,7 +131,7 @@ out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
 rc=$?
 [ "$rc" -eq 0 ] && ok "fast-forward update and helper run succeed" || no "fast-forward update and helper run succeed (exit $rc)"
 contains "success prints DONE" "DONE" "$out"
-[ "$(cat "$BOOTSTRAP_TEST_MARKER")" = "helper ran" ] && ok "helper ran once" || no "helper ran once"
+[ "$(cat "$BOOTSTRAP_TEST_MARKER")" = "helper ran " ] && ok "helper ran once" || no "helper ran once"
 [ "$(git -C "$OPS" rev-parse HEAD)" = "$(git -C "$WORK" rev-parse HEAD)" ] \
 	&& ok "checkout is at the upstream commit" || no "checkout is at the upstream commit"
 
@@ -157,6 +157,18 @@ rc=$?
 [ "$rc" -eq 4 ] && ok "modified helper fails the update" || no "modified helper fails the update (exit $rc)"
 [ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "modified helper was not executed" || no "modified helper was not executed"
 git -C "$OPS" checkout --quiet -- scripts/agent-workstation-refresh.sh
+
+# arguments after -- reach the helper unchanged
+: > "$BOOTSTRAP_TEST_MARKER"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" -- --dry-run --log /tmp/x.log 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "helper arguments are accepted" || no "helper arguments are accepted (exit $rc)"
+if grep -q -- '--dry-run --log /tmp/x.log' "$BOOTSTRAP_TEST_MARKER"; then
+	ok "the helper received the trailing arguments"
+else
+	no "the helper received the trailing arguments"
+	printf '%s\n' "$(cat "$BOOTSTRAP_TEST_MARKER")" | sed 's/^/     | /'
+fi
 
 # dry run updates the checkout but does not run the helper
 : > "$BOOTSTRAP_TEST_MARKER"

@@ -91,6 +91,8 @@ bash bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/
   conflicted checkout fails loudly and is left as it is: no stash, no reset,
   no force, no discarded local work.
 - The helper is executed only after every check above passed.
+- Anything after `--` is passed to the helper unchanged, e.g.
+  `-- --dry-run` to preview the refresh without changing anything.
 
 Download it with a checksum so a truncated response can never be executed:
 

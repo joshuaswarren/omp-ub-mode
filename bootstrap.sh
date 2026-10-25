@@ -25,6 +25,7 @@ OPS_DIR=""
 EXPECT_ORIGIN=""
 HELPER_REL="scripts/agent-workstation-refresh.sh"
 DRY_RUN=0
+EXTRA_ARGS=""
 
 usage() {
 	cat <<'EOF'
@@ -38,6 +39,9 @@ Usage: bootstrap.sh --ops-dir PATH --expect-origin URL [--helper RELPATH] [--dry
                        (default: scripts/agent-workstation-refresh.sh)
   --dry-run            update the checkout, do not run the helper
   -h, --help           show this help
+
+Anything after -- is passed to the helper unchanged:
+  bootstrap.sh --ops-dir ... --expect-origin ... -- --dry-run
 EOF
 }
 
@@ -72,6 +76,10 @@ parse_args() {
 				DRY_RUN=1; shift ;;
 			-h|--help)
 				usage; exit 0 ;;
+			--)
+				shift
+				EXTRA_ARGS="$*"
+				break ;;
 			*)
 				fail_usage "unknown argument: $1" ;;
 		esac
@@ -161,7 +169,13 @@ update_checkout() {
 
 run_helper() {
 	log "running helper: $HELPER_REL"
-	bash "$OPS_DIR/$HELPER_REL"
+	if [ -n "$EXTRA_ARGS" ]; then
+		log "helper arguments: $EXTRA_ARGS"
+		# shellcheck disable=SC2086
+		bash "$OPS_DIR/$HELPER_REL" $EXTRA_ARGS
+	else
+		bash "$OPS_DIR/$HELPER_REL"
+	fi
 	rc=$?
 	if [ "$rc" -ne 0 ]; then
 		err "helper failed with exit status $rc"
