@@ -180,7 +180,7 @@ rc=$?
 # a truncated download must never execute the helper: cut the file at several
 # points and check the helper never runs
 total="$(wc -c < "$BOOTSTRAP")"
-for frac in 10 25 50 75 90; do
+for frac in 10 25 50 75 90 99; do
 	cut=$((total * frac / 100))
 	head -c "$cut" "$BOOTSTRAP" > "$TMP/truncated.sh"
 	: > "$BOOTSTRAP_TEST_MARKER"
@@ -193,8 +193,49 @@ for frac in 10 25 50 75 90; do
 	fi
 done
 
-# the public entry must never reach another host
-if grep -Eq '(^|[^[:alnum:]_])(ssh|scp|sftp|rsync|pct)([[:space:]]|$)' "$BOOTSTRAP"; then
+# a file that ends just before the final main invocation is a partial EOF:
+# it must fail, not exit 0 and look successful
+mainline="$(grep -n '^main "\$@"$' "$BOOTSTRAP" | tail -1 | cut -d: -f1)"
+if [ -n "$mainline" ]; then
+	head -n $((mainline - 1)) "$BOOTSTRAP" > "$TMP/partial-eof.sh"
+	: > "$BOOTSTRAP_TEST_MARKER"
+	out="$(bash "$TMP/partial-eof.sh" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
+	rc=$?
+	[ "$rc" -ne 0 ] && ok "a partial EOF fails instead of reporting success (exit $rc)" \
+		|| no "a partial EOF fails instead of reporting success (exit $rc)"
+	[ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "a partial EOF did not run the helper" \
+		|| no "a partial EOF did not run the helper"
+	contains "a partial EOF says why" "did not complete" "$out"
+fi
+
+# origin forms: https and ssh for the same repo match, an alias host is
+# accepted, a different repo never is
+git -C "$OPS" remote set-url origin "https://github.com/owner/repo.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -ne 3 ] && ok "https and ssh forms of one repo match" || no "https and ssh forms of one repo match (exit $rc)"
+
+git -C "$OPS" remote set-url origin "github-skillshare:owner/repo.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -ne 3 ] && ok "an ssh alias host is accepted" || no "an ssh alias host is accepted (exit $rc)"
+contains "an alias host is reported" "local host alias" "$out"
+
+git -C "$OPS" remote set-url origin "git@github.com:owner/other.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 3 ] && ok "a different repo is refused" || no "a different repo is refused (exit $rc)"
+
+git -C "$OPS" remote set-url origin "git@evil.example.com:owner/repo.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 3 ] && ok "a different real host is refused" || no "a different real host is refused (exit $rc)"
+
+git -C "$OPS" remote set-url origin "$ORIGIN_URL"
+
+# the public entry must never reach another host: look for these commands in
+# command position, not in prose
+if sed 's/#.*//' "$BOOTSTRAP" | grep -Eq '(^|[[:space:];|&(`])(ssh|scp|sftp|rsync|pct)([[:space:]]|$)'; then
 	no "bootstrap.sh contains another-host dispatch"
 else
 	ok "bootstrap.sh contains no other-host dispatch"

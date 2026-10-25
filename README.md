@@ -94,17 +94,23 @@ bash bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/
 - Anything after `--` is passed to the helper unchanged, e.g.
   `-- --dry-run` to preview the refresh without changing anything.
 
-Download it with a checksum so a truncated response can never be executed:
+Download it into a private temporary file and verify its checksum before it is
+executed. Use `mktemp`, never a fixed name: a predictable path in a shared
+`/tmp` can be pre-created or replaced by another user between the download
+and the run.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/joshuaswarren/omp-ub-mode/<commit>/bootstrap.sh -o /tmp/omp-ub-mode-bootstrap.sh \
-  && echo "<sha256>  /tmp/omp-ub-mode-bootstrap.sh" | sha256sum -c - \
-  && bash /tmp/omp-ub-mode-bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git
+tmp="$(mktemp "${TMPDIR:-/tmp}/omp-ub-mode-bootstrap.XXXXXX")" \
+  && curl -fsSL https://raw.githubusercontent.com/joshuaswarren/omp-ub-mode/<commit>/bootstrap.sh -o "$tmp" \
+  && echo "<sha256>  $tmp" | sha256sum -c - \
+  && bash "$tmp" --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git; \
+  rc=$?; rm -f "$tmp"; echo "exit=$rc"
 ```
 
 All of `bootstrap.sh`'s definitions come first and its single `main` call is
 last, so a truncated download can only stop the helper from running — it can
-never run a half-written helper.
+never run a half-written helper. A file that ends before `main` ran exits
+nonzero instead of reporting success.
 
 Check it with `bash test-bootstrap.sh` (Bash and coreutils only).
 

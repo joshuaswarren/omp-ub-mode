@@ -21,6 +21,20 @@
 # never run a half-written helper.
 set -uo pipefail
 
+# A truncated download must never look like a success. If this entry point
+# exits 0 without having finished its work, that is a partial file, not a
+# completed run: fail loudly instead.
+__bootstrap_done=0
+__bootstrap_finish() {
+	rc=$?
+	if [ "$rc" -eq 0 ] && [ "$__bootstrap_done" -ne 1 ]; then
+		printf 'bootstrap: entry point did not complete (truncated download?)\n' >&2
+		rc=3
+	fi
+	exit "$rc"
+}
+trap __bootstrap_finish EXIT
+
 OPS_DIR=""
 EXPECT_ORIGIN=""
 HELPER_REL="scripts/agent-workstation-refresh.sh"
@@ -28,6 +42,7 @@ DRY_RUN=0
 EXTRA_ARGS=""
 
 usage() {
+	__bootstrap_done=1
 	cat <<'EOF'
 Usage: bootstrap.sh --ops-dir PATH --expect-origin URL [--helper RELPATH] [--dry-run]
 
@@ -93,12 +108,26 @@ parse_args() {
 
 # --- helpers ----------------------------------------------------------------
 
-# git@github.com:owner/repo.git | https://github.com/owner/repo -> github.com/owner/repo
+# git@github.com:owner/repo.git | https://github.com/owner/repo
+# | ssh://git@github.com/owner/repo | github-skillshare:owner/repo
+# -> host/path
 normalize_origin() {
 	printf '%s' "$1" \
-	| sed -e 's#\.git$##' -e 's#^git@##' -e 's#^ssh://##' -e 's#^https\?://##' \
-	      -e 's#^git://##' -e 's#:#/#' \
+	| sed -e 's#^[a-zA-Z+]*://##' -e 's#^git@##' -e 's#\.git$##' -e 's#/*$##' -e 's#:#/#' \
 	| tr '[:upper:]' '[:lower:]'
+}
+
+origin_host() { printf '%s' "$1" | cut -d/ -f1; }
+origin_path() { printf '%s' "$1" | cut -d/ -f2-; }
+
+# A host without a dot is a local ssh alias (github-skillshare:...), whose
+# mapping lives in the operator's own ssh config. For those the repo path is
+# the identity; a real host name must match exactly.
+origin_host_is_alias() {
+	case "$1" in
+		''|.*|*.*) return 1 ;;
+		*) return 0 ;;
+	esac
 }
 
 git_in() { git -C "$OPS_DIR" "$@"; }
@@ -137,10 +166,22 @@ validate_origin() {
 	[ -n "$origin" ] || fail_check "checkout has no 'origin' remote: $OPS_DIR"
 	want="$(normalize_origin "$EXPECT_ORIGIN")"
 	got="$(normalize_origin "$origin")"
-	if [ "$got" != "$want" ]; then
-		fail_check "origin mismatch: checkout has '$origin' (normalized '$got'), expected '$EXPECT_ORIGIN' (normalized '$want')"
+	want_host="$(origin_host "$want")"
+	want_path="$(origin_path "$want")"
+	got_host="$(origin_host "$got")"
+	got_path="$(origin_path "$got")"
+
+	[ -n "$got_path" ] && [ "$got_path" = "$want_path" ] \
+		|| fail_check "origin mismatch: checkout has '$origin' (repo '$got_path'), expected '$EXPECT_ORIGIN' (repo '$want_path')"
+
+	if [ "$got_host" != "$want_host" ]; then
+		if origin_host_is_alias "$got_host" || origin_host_is_alias "$want_host"; then
+			log "origin host '$got_host' differs from '$want_host' (local host alias): repo path '$got_path' verified"
+		else
+			fail_check "origin mismatch: checkout points at host '$got_host', expected '$want_host'"
+		fi
 	fi
-	log "origin verified: $origin"
+	log "origin verified: $origin (repo $got_path)"
 }
 
 # --- update -----------------------------------------------------------------
@@ -193,6 +234,7 @@ main() {
 	else
 		run_helper
 	fi
+	__bootstrap_done=1
 	log "DONE"
 }
 
