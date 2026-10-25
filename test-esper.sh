@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -eu
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 printf '#!/bin/sh\nexit 23\n' > "$TMP/curl"
