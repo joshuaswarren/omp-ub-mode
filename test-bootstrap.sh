@@ -295,8 +295,13 @@ git -C "$TMP/work2" push --quiet origin HEAD:refs/heads/main
 git clone --quiet "$TMP/origin2.git" "$HOME_DIR/src/ops2"
 mkdir -p "$TMP/work2/scripts"
 cp "$WORK/scripts/agent-workstation-refresh.sh" "$TMP/work2/scripts/agent-workstation-refresh.sh"
+# the upstream commit must add every dependency the helper executes
+for dep in agent-workstation-refresh.pins install-ponytail.sh install-unclebob-tools.sh \
+	unclebob-tools-fixture.sh install-uml-viewer.sh; do
+	printf '# stub %s\n' "$dep" > "$TMP/work2/scripts/$dep"
+done
 git -C "$TMP/work2" add -A
-git -C "$TMP/work2" commit --quiet -m "add the helper"
+git -C "$TMP/work2" commit --quiet -m "add the helper and its dependencies"
 git -C "$TMP/work2" push --quiet origin HEAD:refs/heads/main
 # put the checkout back to the commit that has no helper
 git -C "$HOME_DIR/src/ops2" reset --quiet --hard "$old_sha"
@@ -313,10 +318,15 @@ else
 	no "the helper pulled by the update ran"
 fi
 
-# the public entry must never reach another host: look for these commands in
-# command position, not in prose
-if sed 's/#.*//' "$BOOTSTRAP" | grep -Eq '(^|[[:space:];|&(`])(ssh|scp|sftp|rsync|pct)([[:space:]]|$)'; then
+# The public entry must never reach another host. `ssh -G` only reads the
+# local ssh config to resolve an alias (it connects to nothing); every other
+# ssh/scp/rsync/pct use is a dispatch and is refused.
+suspects="$(sed 's/#.*//' "$BOOTSTRAP" \
+	| grep -nE '(^|[[:space:];|&(`])(ssh|scp|sftp|rsync|pct)([[:space:]]|$)' \
+	| grep -v 'ssh[[:space:]]\+-G[[:space:]]')"
+if [ -n "$suspects" ]; then
 	no "bootstrap.sh contains another-host dispatch"
+	printf '%s\n' "$suspects" | sed 's/^/     | /'
 else
 	ok "bootstrap.sh contains no other-host dispatch"
 fi
