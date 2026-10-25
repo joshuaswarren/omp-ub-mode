@@ -84,22 +84,29 @@ authentication is used as-is.
 bash bootstrap.sh --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git
 ```
 
-- `--ops-dir` must be an existing checkout under the invoking user's home.
+- `--ops-dir` must be an existing checkout under the invoking user's home and
+  the root of that checkout.
 - `--expect-origin` must match that checkout's `origin`; a mismatch stops the
-  run before the helper is executed.
-- The update is `git fetch` + `git merge --ff-only` only. A diverged or
-  conflicted checkout fails loudly and is left as it is: no stash, no reset,
-  no force, no discarded local work.
-- The helper is executed only after every check above passed.
-- The update is main-only: the checkout must be on `main`, and only
-  `origin/main` is fetched. After the fast-forward every file the helper
-  executes (the helper, its pins, the ponytail installer, the analysis
-  installer and its fixture library, the viewer installer) must be tracked by
-  git and identical to `HEAD`; a local edit to any of them is refused.
+  run before the helper is executed, and any credentials in the URLs are
+  redacted from the message.
+- On `main` the update is `git fetch` + `git merge --ff-only` only. A diverged
+  or conflicted checkout fails loudly and is left as it is: no stash, no
+  reset, no force, no discarded local work.
+- On any other branch, or a detached HEAD, the checkout is never switched,
+  merged, stashed or reset: the fetched commit is materialized in a temporary
+  isolated detached worktree under `$HOME`, verified to be exactly that
+  commit and pristine, and the helper runs from there. The checkout keeps its
+  HEAD, index and untracked files untouched. A worktree the helper left
+  uncommitted files in is kept and its path printed, never force-removed.
+- The helper is executed only after every check above passed, and only from
+  the fetched commit's tree: `origin/main` is fetched by explicit refspec
+  (`refs/heads/main` only, no tags), and every file the helper executes (the
+  helper, its pins, the ponytail installer, the analysis installer and its
+  fixture library, the viewer installer) must be tracked by git and identical
+  to the fetched commit. A local edit is never executed.
 - Anything after `--` is passed to the helper unchanged, e.g.
-  `-- --dry-run`. A dry run still fast-forwards the ops checkout — that is
-  the point of the update — and the helper's own dry run changes nothing but
-  its own scoped log.
+  `-- --dry-run`. A dry run still updates (fast-forward on `main`, fetch plus
+  verified worktree anywhere else) but does not run the helper.
 
 Download it into a private temporary file and verify its checksum before it is
 executed. Use `mktemp`, never a fixed name: a predictable path in a shared

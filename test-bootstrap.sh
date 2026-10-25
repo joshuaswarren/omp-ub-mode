@@ -120,6 +120,17 @@ contains "origin mismatch message" "origin mismatch" "$out"
 [ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "helper did not run after origin mismatch" \
 	|| no "helper ran despite origin mismatch"
 
+# a credential hidden in either URL must never surface in the message
+git -C "$OPS" remote set-url origin "https://ops:secrettoken@github.com/someone/else.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "https://ops:secrettoken@github.com/owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 3 ] && ok "credentialed origin mismatch fails validation" || no "credentialed origin mismatch fails validation (exit $rc)"
+case "$out" in
+	*secrettoken*) no "credential is redacted from the mismatch message" ;;
+	*) ok "credential is redacted from the mismatch message" ;;
+esac
+git -C "$OPS" remote set-url origin "$ORIGIN_URL"
+
 # helper not tracked by git
 git -C "$OPS" rm --quiet --cached scripts/agent-workstation-refresh.sh
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
@@ -164,13 +175,150 @@ contains "modified helper message" "differs from HEAD" "$out"
 [ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "modified helper was not executed" || no "modified helper was not executed"
 git -C "$OPS" checkout --quiet -- scripts/agent-workstation-refresh.sh
 
-# only main is updated
-git -C "$OPS" checkout --quiet -b side-branch
-out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
+# --- non-main checkouts: isolated worktree, source checkout untouched -------
+# The operator sits on a feature branch committed ahead of main that carries
+# staged, unstaged and untracked work — including a locally modified helper
+# dependency. The dirty source is never executed and must not block either:
+# the helper runs from the freshly fetched origin/main in a detached worktree.
+FEATURE="$HOME_DIR/src/ops-feature"
+git clone --quiet "$ORIGIN" "$FEATURE"
+git -C "$FEATURE" checkout --quiet -b feature/studio-swap
+git -C "$FEATURE" commit --quiet --allow-empty -m "feature work ahead of main"
+printf 'staged work\n' > "$FEATURE/scripts/staged.txt"
+git -C "$FEATURE" add scripts/staged.txt
+printf '\n# unstaged local edit\n' >> "$FEATURE/scripts/install-ponytail.sh"
+printf 'untracked note\n' > "$FEATURE/notes.txt"
+feature_head="$(git -C "$FEATURE" rev-parse HEAD)"
+feature_main="$(git -C "$FEATURE" rev-parse refs/heads/main)"
+git -C "$FEATURE" status --porcelain=v1 > "$TMP/feature-status.before"
+for f in scripts/staged.txt scripts/install-ponytail.sh notes.txt; do
+	cp "$FEATURE/$f" "$TMP/feature-$(basename "$f").before"
+done
+# upstream main gains a new helper version; the marker tells the versions apart
+printf '\nprintf "helper version 2\\n" >> "$BOOTSTRAP_TEST_MARKER"\n' \
+	>> "$WORK/scripts/agent-workstation-refresh.sh"
+git -C "$WORK" add -A
+git -C "$WORK" commit --quiet -m "helper version 2"
+git -C "$WORK" push --quiet origin HEAD:refs/heads/main
+: > "$BOOTSTRAP_TEST_MARKER"
+out="$(bash "$BOOTSTRAP" --ops-dir "$FEATURE" --expect-origin "$ORIGIN_URL" 2>&1)"
 rc=$?
-[ "$rc" -eq 4 ] && ok "a non-main checkout is refused" || no "a non-main checkout is refused (exit $rc)"
-contains "a non-main checkout says why" "only updates main" "$out"
-git -C "$OPS" checkout --quiet main
+[ "$rc" -eq 0 ] && ok "feature-branch run succeeds" || no "feature-branch run succeeds (exit $rc)"
+contains "feature-branch run uses an isolated worktree" "isolated worktree" "$out"
+contains "feature-branch run reports DONE" "DONE" "$out"
+grep -q "helper version 2" "$BOOTSTRAP_TEST_MARKER" \
+	&& ok "helper ran from new origin/main" || no "helper ran from new origin/main"
+grep -q "helper ran " "$BOOTSTRAP_TEST_MARKER" \
+	&& ok "helper executed once from the worktree" || no "helper did not run"
+[ "$(git -C "$FEATURE" rev-parse refs/remotes/origin/main)" = "$(git -C "$WORK" rev-parse HEAD)" ] \
+	&& ok "origin/main source updated in the checkout" || no "origin/main not updated"
+[ "$(git -C "$FEATURE" symbolic-ref --quiet --short HEAD)" = "feature/studio-swap" ] \
+	&& ok "feature branch still checked out" || no "feature branch switched"
+[ "$(git -C "$FEATURE" rev-parse HEAD)" = "$feature_head" ] \
+	&& ok "feature HEAD preserved" || no "feature HEAD moved"
+[ "$(git -C "$FEATURE" rev-parse refs/heads/main)" = "$feature_main" ] \
+	&& ok "local main ref untouched" || no "local main ref moved"
+git -C "$FEATURE" status --porcelain=v1 > "$TMP/feature-status.after"
+cmp -s "$TMP/feature-status.before" "$TMP/feature-status.after" \
+	&& ok "staged, unstaged and untracked state preserved" || no "worktree state changed"
+for f in scripts/staged.txt scripts/install-ponytail.sh notes.txt; do
+	cmp -s "$FEATURE/$f" "$TMP/feature-$(basename "$f").before" \
+		&& ok "file preserved byte-for-byte: $f" || no "file changed: $f"
+done
+[ -z "$(git -C "$FEATURE" stash list)" ] \
+	&& ok "no stash created on the feature checkout" || no "stash created on the feature checkout"
+[ -z "$(find "$HOME_DIR" -maxdepth 1 -name '.bootstrap-worktree.*' -print -quit)" ] \
+	&& ok "isolated worktree removed after a clean run" || no "isolated worktree left behind"
+[ "$(git -C "$FEATURE" worktree list | wc -l)" -eq 1 ] \
+	&& ok "no worktree metadata left in the checkout" || no "worktree metadata left in the checkout"
+
+# detached HEAD takes the same path and is preserved too
+git -C "$FEATURE" checkout --quiet --detach
+detached_head="$(git -C "$FEATURE" rev-parse HEAD)"
+: > "$BOOTSTRAP_TEST_MARKER"
+out="$(bash "$BOOTSTRAP" --ops-dir "$FEATURE" --expect-origin "$ORIGIN_URL" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "detached-HEAD run succeeds" || no "detached-HEAD run succeeds (exit $rc)"
+grep -q "helper version 2" "$BOOTSTRAP_TEST_MARKER" \
+	&& ok "detached run used new origin/main" || no "detached run used stale source"
+[ "$(git -C "$FEATURE" rev-parse HEAD)" = "$detached_head" ] \
+	&& ok "detached HEAD preserved" || no "detached HEAD moved"
+cmp -s "$TMP/feature-status.before" <(git -C "$FEATURE" status --porcelain=v1) \
+	&& ok "detached working state preserved" || no "detached working state changed"
+
+# a helper that fails out of the worktree propagates: exit 5, checkout intact
+FAIL_ORIGIN="$TMP/origin-fail.git"
+git init --quiet --bare "$FAIL_ORIGIN"
+git -C "$FAIL_ORIGIN" symbolic-ref HEAD refs/heads/main
+FAIL_WORK="$TMP/work-fail"
+mkdir -p "$FAIL_WORK/scripts"
+git init --quiet "$FAIL_WORK"
+git -C "$FAIL_WORK" symbolic-ref HEAD refs/heads/main
+for dep in agent-workstation-refresh.pins install-ponytail.sh install-unclebob-tools.sh \
+	unclebob-tools-fixture.sh install-uml-viewer.sh; do
+	printf '# stub %s\n' "$dep" > "$FAIL_WORK/scripts/$dep"
+done
+printf '#!/usr/bin/env bash\nexit 7\n' > "$FAIL_WORK/scripts/agent-workstation-refresh.sh"
+git -C "$FAIL_WORK" add -A
+git -C "$FAIL_WORK" commit --quiet -m "failing helper"
+git -C "$FAIL_WORK" remote add origin "$FAIL_ORIGIN"
+git -C "$FAIL_WORK" push --quiet origin HEAD:refs/heads/main
+FAIL_OPS="$HOME_DIR/src/ops-fail"
+git clone --quiet "$FAIL_ORIGIN" "$FAIL_OPS"
+git -C "$FAIL_OPS" checkout --quiet -b feature/fail
+git -C "$FAIL_OPS" commit --quiet --allow-empty -m "local feature work"
+fail_head="$(git -C "$FAIL_OPS" rev-parse HEAD)"
+out="$(bash "$BOOTSTRAP" --ops-dir "$FAIL_OPS" --expect-origin "$FAIL_ORIGIN" 2>&1)"
+rc=$?
+[ "$rc" -eq 5 ] && ok "helper failure exits 5 from the worktree path" || no "helper failure exits 5 (exit $rc)"
+contains "helper failure is reported" "helper failed" "$out"
+[ "$(git -C "$FAIL_OPS" rev-parse HEAD)" = "$fail_head" ] \
+	&& ok "checkout untouched after helper failure" || no "checkout changed after helper failure"
+[ -z "$(find "$HOME_DIR" -maxdepth 1 -name '.bootstrap-worktree.*' -print -quit)" ] \
+	&& ok "worktree removed after helper failure" || no "worktree left after helper failure"
+
+# generated files in the worktree are kept and reported, never force-removed.
+# Plain worktree removal deletes ignored files too, so an ignored helper
+# output must keep the worktree exactly like an untracked one does.
+KEEP_ORIGIN="$TMP/origin-keep.git"
+git init --quiet --bare "$KEEP_ORIGIN"
+git -C "$KEEP_ORIGIN" symbolic-ref HEAD refs/heads/main
+KEEP_WORK="$TMP/work-keep"
+mkdir -p "$KEEP_WORK/scripts"
+git init --quiet "$KEEP_WORK"
+git -C "$KEEP_WORK" symbolic-ref HEAD refs/heads/main
+for dep in agent-workstation-refresh.pins install-ponytail.sh install-unclebob-tools.sh \
+	unclebob-tools-fixture.sh install-uml-viewer.sh; do
+	printf '# stub %s\n' "$dep" > "$KEEP_WORK/scripts/$dep"
+done
+printf '*.log\n' > "$KEEP_WORK/.gitignore"
+cat > "$KEEP_WORK/scripts/agent-workstation-refresh.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'generated\n' > "$(cd "$(dirname "$0")" && pwd)/generated-by-helper.txt"
+printf 'ignored\n' > "$(cd "$(dirname "$0")/.." && pwd)/helper-debug.log"
+EOF
+git -C "$KEEP_WORK" add -A
+git -C "$KEEP_WORK" commit --quiet -m "littering helper"
+git -C "$KEEP_WORK" remote add origin "$KEEP_ORIGIN"
+git -C "$KEEP_WORK" push --quiet origin HEAD:refs/heads/main
+KEEP_OPS="$HOME_DIR/src/ops-keep"
+git clone --quiet "$KEEP_ORIGIN" "$KEEP_OPS"
+git -C "$KEEP_OPS" checkout --quiet -b feature/keep
+git -C "$KEEP_OPS" commit --quiet --allow-empty -m "local feature work"
+out="$(bash "$BOOTSTRAP" --ops-dir "$KEEP_OPS" --expect-origin "$KEEP_ORIGIN" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "generated worktree files do not fail the run" || no "generated worktree files fail the run (exit $rc)"
+contains "kept worktree is reported" "was kept" "$out"
+keep_left="$(find "$HOME_DIR" -maxdepth 1 -name '.bootstrap-worktree.*' -print -quit)"
+[ -n "$keep_left" ] && ok "worktree with generated files is kept" || no "worktree with generated files removed"
+[ "$(git -C "$KEEP_OPS" worktree list | wc -l)" -eq 2 ] \
+	&& ok "kept worktree stays registered" || no "kept worktree deregistered"
+[ -f "$keep_left/worktree/scripts/generated-by-helper.txt" ] \
+	&& ok "generated file preserved in the kept worktree" || no "generated file destroyed"
+[ -f "$keep_left/worktree/helper-debug.log" ] \
+	&& ok "ignored generated file preserved too" || no "ignored generated file destroyed"
+git -C "$KEEP_OPS" worktree remove --force "$keep_left/worktree"
+rmdir "$keep_left" 2>/dev/null
 
 # every dependency the helper executes must be tracked and unmodified
 printf '\n# local edit\n' >> "$OPS/scripts/install-ponytail.sh"
@@ -256,6 +404,25 @@ git -C "$OPS" remote set-url origin "https://github.com/owner/repo.git"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
 rc=$?
 [ "$rc" -ne 3 ] && ok "https and ssh forms of one repo match" || no "https and ssh forms of one repo match (exit $rc)"
+
+# a token-bearing origin must match its bare form and never leak the token
+# through host resolution or any log line
+git -C "$OPS" remote set-url origin "https://ops:secrettoken@github.com/owner/repo.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -ne 3 ] && ok "a credentialed https origin matches its bare form" || no "a credentialed https origin matches its bare form (exit $rc)"
+case "$out" in
+	*secrettoken*) no "matching-run output carries no credential" ;;
+	*) ok "matching-run output carries no credential" ;;
+esac
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:someone/else.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 3 ] && ok "a credentialed mismatching origin is refused" || no "a credentialed mismatching origin is refused (exit $rc)"
+case "$out" in
+	*secrettoken*) no "mismatch output carries no credential" ;;
+	*) ok "mismatch output carries no credential" ;;
+esac
+git -C "$OPS" remote set-url origin "$ORIGIN_URL"
 
 git -C "$OPS" remote set-url origin "github-skillshare:owner/repo.git"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
