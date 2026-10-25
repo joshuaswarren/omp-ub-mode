@@ -97,6 +97,10 @@ test("env override wins, accepts file or directory, and is authoritative", () =>
 	);
 });
 
+test("loadSkillBody with null env and empty home throws the exact not-found error", () => {
+	assert.throws(() => loadSkillBody(null, tempHome()), /SKILL\.md not found/);
+});
+
 test("null env falls back to the default search paths", () => {
 	const home = tempHome();
 	const file = installSkill(home);
@@ -279,10 +283,22 @@ test("opencode hook: error with preexisting system stays ONE segment", async () 
 	assert.ok(!output.system[0].includes(SENTINEL), "error line must not look like an injection");
 	assert.equal(logCalls.length, 1);
 	assert.equal(logCalls[0].body.level, "error");
+	// Diagnostic must be a SINGLE line: the multi-line not-found error is
+	// reduced to its first line before being appended (kills split mutants).
+	assert.ok(!output.system[0].includes("\n  "), "searched-path list must not leak into the prompt");
+	assert.match(output.system[0], /not found/);
 	// Second turn: diagnostic not duplicated.
 	await transform({}, output);
 	assert.equal(output.system.filter((s) => s.includes(DIAGNOSTIC_TAG)).length, 1);
 	assert.equal(output.system.length, 1);
+});
+
+test("opencode hook: absent client still emits the diagnostic and resolves", async () => {
+	const plugin = await opencodePlugin({ env: fixtureEnv("/nonexistent/ub-mode/SKILL.md") });
+	const output = { system: ["base prompt"] };
+	await assert.doesNotReject(() => plugin["experimental.chat.system.transform"]({}, output));
+	assert.equal(output.system.length, 1);
+	assert.match(output.system[0], /\[omp-ub-mode\] ERROR/);
 });
 
 test("opencode hook: error with no system segments pushes one diagnostic segment", async () => {

@@ -13,18 +13,21 @@
 
 import { DIAGNOSTIC_TAG, SENTINEL, buildBlock, loadSkillBody } from "./core.js";
 
+// Shared by the success and diagnostic paths; two real call sites, kept at
+// module scope so the transform hook stays small.
+function appendOnce(output, text, tag) {
+	if (output.system.some((segment) => segment.includes(tag))) return;
+	if (output.system.length > 0) {
+		output.system[output.system.length - 1] += "\n\n" + text;
+	} else {
+		output.system.push(text);
+	}
+}
+
 // Named export so stack traces and mutation/detection tools attribute
 // failures to this plugin instead of an anonymous arrow.
 export default async function ubModeOpenCodePlugin({ client, env, home } = {}) {
 	async function experimentalChatSystemTransform(_input, output) {
-		const appendOnce = (text, tag) => {
-			if (output.system.some((segment) => segment.includes(tag))) return;
-			if (output.system.length > 0) {
-				output.system[output.system.length - 1] += "\n\n" + text;
-			} else {
-				output.system.push(text);
-			}
-		};
 		let block;
 		try {
 			block = buildBlock(loadSkillBody(env, home));
@@ -33,15 +36,19 @@ export default async function ubModeOpenCodePlugin({ client, env, home } = {}) {
 			// clearly-tagged line in the prompt so a missing install is obvious
 			// in-context; the turn proceeds. Uses its own tag (never the
 			// injection sentinel) so a later successful load still injects.
-			const message = String((err && err.message) || err).split("\n")[0];
+			// loadSkillBody always throws Error instances, so err.message is
+			// guaranteed; keep the first line only for the single-line prompt.
+			const message = err.message.split("\n")[0];
 			try {
-				// Awaited so a rejecting log call is caught here instead of
-				// surfacing as an unhandled rejection.
-				await client?.app?.log?.({
+				// Not optional-chained: the surrounding catch already handles an
+				// absent client, absent method, or a rejected log sink. Awaited
+				// so none of those surface as unhandled rejections.
+				await client.app.log({
 					body: { service: "omp-ub-mode", level: "error", message },
 				});
 			} catch {}
 			appendOnce(
+				output,
 				DIAGNOSTIC_TAG +
 					" ERROR: ub-mode skill not injected — " +
 					message +
@@ -50,7 +57,7 @@ export default async function ubModeOpenCodePlugin({ client, env, home } = {}) {
 			);
 			return;
 		}
-		appendOnce(block, SENTINEL);
+		appendOnce(output, block, SENTINEL);
 	}
 
 	return { "experimental.chat.system.transform": experimentalChatSystemTransform };
