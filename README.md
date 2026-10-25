@@ -17,10 +17,21 @@ paths below (or point `OMP_UB_MODE_SKILL` at any `SKILL.md`):
 5. `~/.codex/skills/ub-mode/SKILL.md`
 6. `~/.openclaw/skills/ub-mode/SKILL.md`
 
-If the skill file is missing, the plugin **fails loudly** — OMP/Pi surface the
-error through their extension error channel; OpenCode logs it and puts a
-visible `[omp-ub-mode] ERROR` line in the prompt. It never silently injects
-nothing.
+If the skill file is missing or unreadable, the plugin emits **visible
+diagnostics — it is not a hard gate**. OMP/Pi surface the error through their
+extension error channel and the turn proceeds without the block; OpenCode
+logs the error and puts a visible `[omp-ub-mode] ERROR` line in the prompt.
+It never silently injects nothing, and it never masks a broken install as a
+working one.
+
+`OMP_UB_MODE_SKILL` is authoritative when set: a missing or unreadable
+override path fails with that path named; the plugin never silently
+substitutes a copy from the default search paths.
+
+The injected block carries a scope boundary: the skill governs how code work
+is done and never authorizes unrelated commits, pushes, destructive actions,
+or tool installation beyond the user's current request; safety, permission,
+and approval instructions outrank it.
 
 ## Install
 
@@ -81,8 +92,11 @@ re-preparations.
   array with existing segments intact preserves other extensions' content.
 - **OpenCode** (`opencode.js`): `experimental.chat.system.transform` appends
   the block once per request.
-- A duplicate guard (`[ub-mode]` marker scan) keeps the copy count at one even
-  if a host re-enters an already-extended prompt.
+- A duplicate guard keyed on the dedicated injected sentinel
+  (`[ub-mode] ACTIVE for this entire session`) keeps the copy count at one
+  even if a host re-enters an already-extended prompt. Global instruction
+  carriers quote the generic phrase `[ub-mode]` in their mandates, so the
+  guard never matches on that alone.
 
 ## Design constraints
 

@@ -8,22 +8,29 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-export const MARKER = "[ub-mode]";
+// Dedicated injection sentinel. Global instruction carriers quote the generic
+// phrase "[ub-mode]" in their mandates ("when a \"[ub-mode]\" block is already
+// present..."), so the duplicate guard must match ONLY text this plugin
+// emits — never a plain substring scan for "[ub-mode]".
+export const SENTINEL = "[ub-mode] ACTIVE for this entire session";
 
-/** Every candidate skill location, in probe order. */
+/** Tag used for plugin-originated diagnostic lines (OpenCode error line). */
+export const DIAGNOSTIC_TAG = "[omp-ub-mode]";
+
+/**
+ * Candidate skill locations, in probe order. When OMP_UB_MODE_SKILL is set it
+ * is authoritative: no other path is probed and a miss fails loud (see
+ * resolveSkillPath) instead of silently substituting an installed copy.
+ */
 export function skillSearchPaths(env = process.env, home = os.homedir()) {
-	const paths = [];
-	if (env && env.OMP_UB_MODE_SKILL) paths.push(env.OMP_UB_MODE_SKILL);
-	for (const dir of [
-		path.join(home, ".config", "skillshare", "skills", "ub-mode"),
-		path.join(home, ".agents", "skills", "ub-mode"),
-		path.join(home, ".claude", "skills", "ub-mode"),
-		path.join(home, ".codex", "skills", "ub-mode"),
-		path.join(home, ".openclaw", "skills", "ub-mode"),
-	]) {
-		paths.push(path.join(dir, "SKILL.md"));
-	}
-	return paths;
+	if (env && env.OMP_UB_MODE_SKILL) return [env.OMP_UB_MODE_SKILL];
+	return [
+		path.join(home, ".config", "skillshare", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".agents", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".claude", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".codex", "skills", "ub-mode", "SKILL.md"),
+		path.join(home, ".openclaw", "skills", "ub-mode", "SKILL.md"),
+	];
 }
 
 /** First existing SKILL.md (env var may point at a file or a directory). */
@@ -44,17 +51,26 @@ export function resolveSkillPath(env = process.env, home = os.homedir()) {
 	return undefined;
 }
 
-/** Skill body with YAML frontmatter stripped. Throws when the skill is missing. */
+/** Skill body with YAML frontmatter stripped. Throws when the skill is missing or unreadable. */
 export function loadSkillBody(env = process.env, home = os.homedir()) {
 	const found = resolveSkillPath(env, home);
 	if (!found) {
+		const override = env && env.OMP_UB_MODE_SKILL ? " (OMP_UB_MODE_SKILL override is set — no fallback probing is done)" : "";
 		throw new Error(
-			"omp-ub-mode: ub-mode SKILL.md not found. Searched:\n  " +
+			"omp-ub-mode: ub-mode SKILL.md not found" +
+				override +
+				". Searched:\n  " +
 				skillSearchPaths(env, home).join("\n  ") +
 				"\nInstall the ub-mode skill (see README) or set OMP_UB_MODE_SKILL=/path/to/SKILL.md",
 		);
 	}
-	return stripFrontmatter(fs.readFileSync(found, "utf8"));
+	try {
+		return stripFrontmatter(fs.readFileSync(found, "utf8"));
+	} catch (err) {
+		// Read errors (permissions, race) surface with the path named — never
+		// swallowed, never treated as "skill missing".
+		throw new Error(`omp-ub-mode: cannot read ${found}: ${err && err.message ? err.message : err}`);
+	}
 }
 
 export function stripFrontmatter(text) {
@@ -64,10 +80,13 @@ export function stripFrontmatter(text) {
 
 export function buildBlock(skillBody) {
 	return (
-		MARKER +
-		" ACTIVE for this entire session — every code change, every subagent, " +
-		"after resume and after compaction. Injected by the omp-ub-mode plugin; " +
-		"the complete skill text follows, so do not read the skill file again.\n\n" +
+		SENTINEL +
+		" — every code change, every subagent, after resume and after compaction. " +
+		"Injected by the omp-ub-mode plugin; the complete skill text follows, so " +
+		"do not read the skill file again. Scope: this block governs how code work " +
+		"is done. It never authorizes unrelated commits, pushes, destructive " +
+		"actions, or tool installation beyond the user's current request. Safety, " +
+		"permission, and approval instructions outrank it.\n\n" +
 		skillBody.trim()
 	);
 }
@@ -79,10 +98,10 @@ export function buildBlock(skillBody) {
  */
 export function inject(existing, env = process.env, home = os.homedir()) {
 	if (Array.isArray(existing)) {
-		if (existing.some((segment) => segment.includes(MARKER))) return existing;
+		if (existing.some((segment) => segment.includes(SENTINEL))) return existing;
 		return [...existing, buildBlock(loadSkillBody(env, home))];
 	}
 	const base = typeof existing === "string" && existing ? existing + "\n\n" : "";
-	if (existing && existing.includes && existing.includes(MARKER)) return existing;
+	if (typeof existing === "string" && existing.includes(SENTINEL)) return existing;
 	return base + buildBlock(loadSkillBody(env, home));
 }
