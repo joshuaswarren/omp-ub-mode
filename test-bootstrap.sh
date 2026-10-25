@@ -318,12 +318,13 @@ else
 	no "the helper pulled by the update ran"
 fi
 
-# The public entry must never reach another host. `ssh -G` only reads the
-# local ssh config to resolve an alias (it connects to nothing); every other
-# ssh/scp/rsync/pct use is a dispatch and is refused.
+# The public entry must never reach another host. Two forms are allowed: the
+# `ssh -G` config lookup, which resolves an alias and connects to nothing, and
+# the `command -v ssh` capability probe. Every other ssh/scp/rsync/pct use is a
+# dispatch and is refused.
 suspects="$(sed 's/#.*//' "$BOOTSTRAP" \
 	| grep -nE '(^|[[:space:];|&(`])(ssh|scp|sftp|rsync|pct)([[:space:]]|$)' \
-	| grep -v 'ssh[[:space:]]\+-G[[:space:]]')"
+	| grep -vE 'ssh[[:space:]]+-G[[:space:]]|command -v ssh')"
 if [ -n "$suspects" ]; then
 	no "bootstrap.sh contains another-host dispatch"
 	printf '%s\n' "$suspects" | sed 's/^/     | /'
