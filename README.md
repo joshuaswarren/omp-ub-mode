@@ -104,8 +104,11 @@ tmp="$(mktemp "${TMPDIR:-/tmp}/omp-ub-mode-bootstrap.XXXXXX")" \
   && curl -fsSL https://raw.githubusercontent.com/joshuaswarren/omp-ub-mode/<commit>/bootstrap.sh -o "$tmp" \
   && echo "<sha256>  $tmp" | sha256sum -c - \
   && bash "$tmp" --ops-dir ~/src/ops-repo --expect-origin git@github.com:owner/repo.git; \
-  rc=$?; rm -f "$tmp"; echo "exit=$rc"
+  rc=$?; rm -f "$tmp"; echo "exit=$rc"; [ "$rc" -eq 0 ]
 ```
+
+The last test carries the exit status: a failed run leaves a non-zero status
+for the caller instead of being masked by the final echo.
 
 All of `bootstrap.sh`'s definitions come first and its single `main` call is
 last, so a truncated download can only stop the helper from running — it can
