@@ -120,21 +120,26 @@ normalize_origin() {
 origin_host() { printf '%s' "$1" | cut -d/ -f1; }
 origin_path() { printf '%s' "$1" | cut -d/ -f2-; }
 
-# A host without a dot is a local ssh alias (github-skillshare:...), whose
-# mapping lives in the operator's own ssh config. For those the repo path is
-# the identity; a real host name must match exactly.
-origin_host_is_alias() {
-	case "$1" in
-		''|.*|*.*) return 1 ;;
-		*) return 0 ;;
-	esac
+# The effective hostname of a host or ssh alias, resolved from the local ssh
+# config WITHOUT connecting. A dotless name is never trusted on its own: it
+# only counts when it resolves to the expected host.
+resolve_host() {
+	h="$1"
+	if command -v ssh >/dev/null 2>&1; then
+		r="$(ssh -G "$h" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
+		if [ -n "$r" ]; then
+			printf '%s\n' "$r" | tr '[:upper:]' '[:lower:]'
+			return 0
+		fi
+	fi
+	printf '%s\n' "$h" | tr '[:upper:]' '[:lower:]'
 }
 
 git_in() { git -C "$OPS_DIR" "$@"; }
 
 # --- validation -------------------------------------------------------------
 
-validate_ops_dir() {
+validate_repo() {
 	[ -n "$OPS_DIR" ] || fail_check "--ops-dir is empty"
 	[ -d "$OPS_DIR" ] || fail_check "ops dir does not exist: $OPS_DIR"
 	OPS_DIR="$(cd "$OPS_DIR" 2>/dev/null && pwd -P)" \
@@ -154,11 +159,17 @@ validate_ops_dir() {
 
 	git_in rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 		|| fail_check "ops dir is not a git checkout: $OPS_DIR"
+}
 
+# The helper may only exist in the commit this bootstrap is about to fetch,
+# so it is checked after the update, not before.
+validate_helper() {
 	[ -f "$OPS_DIR/$HELPER_REL" ] \
-		|| fail_check "helper not found in checkout: $HELPER_REL"
+		|| fail_check "helper not found in the updated checkout: $HELPER_REL"
 	git_in ls-files --error-unmatch -- "$HELPER_REL" >/dev/null 2>&1 \
 		|| fail_check "helper is not tracked by git in the checkout: $HELPER_REL"
+	git_in diff --quiet HEAD -- "$HELPER_REL" \
+		|| fail_check "helper differs from HEAD (locally modified): $HELPER_REL"
 }
 
 validate_origin() {
@@ -175,10 +186,12 @@ validate_origin() {
 		|| fail_check "origin mismatch: checkout has '$origin' (repo '$got_path'), expected '$EXPECT_ORIGIN' (repo '$want_path')"
 
 	if [ "$got_host" != "$want_host" ]; then
-		if origin_host_is_alias "$got_host" || origin_host_is_alias "$want_host"; then
-			log "origin host '$got_host' differs from '$want_host' (local host alias): repo path '$got_path' verified"
+		got_resolved="$(resolve_host "$got_host")"
+		want_resolved="$(resolve_host "$want_host")"
+		if [ "$got_resolved" = "$want_resolved" ]; then
+			log "origin host '$got_host' resolves to '$got_resolved' (same as '$want_host'): repo path '$got_path' verified"
 		else
-			fail_check "origin mismatch: checkout points at host '$got_host', expected '$want_host'"
+			fail_check "origin mismatch: checkout points at host '$got_host' (resolves to '$got_resolved'), expected '$want_host' (resolves to '$want_resolved')"
 		fi
 	fi
 	log "origin verified: $origin (repo $got_path)"
@@ -199,9 +212,6 @@ update_checkout() {
 	fi
 	if ! git_in merge --ff-only "origin/$branch"; then
 		fail_update "fast-forward to origin/$branch failed: the checkout has local commits or conflicts; resolve it by hand (nothing was reset, stashed or discarded)"
-	fi
-	if ! git_in diff --quiet HEAD -- "$HELPER_REL"; then
-		fail_update "helper differs from HEAD after the update (locally modified): $HELPER_REL"
 	fi
 	log "checkout updated to $(git_in rev-parse --short HEAD)"
 }
@@ -226,9 +236,10 @@ run_helper() {
 
 main() {
 	parse_args "$@"
-	validate_ops_dir
+	validate_repo
 	validate_origin
 	update_checkout
+	validate_helper
 	if [ "$DRY_RUN" -eq 1 ]; then
 		log "dry run: helper not executed"
 	else

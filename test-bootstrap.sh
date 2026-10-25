@@ -154,7 +154,8 @@ printf '\n# local edit\n' >> "$OPS/scripts/agent-workstation-refresh.sh"
 : > "$BOOTSTRAP_TEST_MARKER"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "$ORIGIN_URL" 2>&1)"
 rc=$?
-[ "$rc" -eq 4 ] && ok "modified helper fails the update" || no "modified helper fails the update (exit $rc)"
+[ "$rc" -eq 3 ] && ok "modified helper is refused" || no "modified helper is refused (exit $rc)"
+contains "modified helper message" "differs from HEAD" "$out"
 [ ! -s "$BOOTSTRAP_TEST_MARKER" ] && ok "modified helper was not executed" || no "modified helper was not executed"
 git -C "$OPS" checkout --quiet -- scripts/agent-workstation-refresh.sh
 
@@ -208,8 +209,17 @@ if [ -n "$mainline" ]; then
 	contains "a partial EOF says why" "did not complete" "$out"
 fi
 
-# origin forms: https and ssh for the same repo match, an alias host is
-# accepted, a different repo never is
+# origin forms: https and ssh for the same repo match, a documented ssh alias
+# is accepted when it resolves to the expected host, a different repo or an
+# unknown host never is
+mkdir -p "$HOME/.ssh"
+cat > "$HOME/.ssh/config" <<'EOF'
+Host github-skillshare
+  HostName github.com
+  User git
+EOF
+chmod 600 "$HOME/.ssh/config"
+
 git -C "$OPS" remote set-url origin "https://github.com/owner/repo.git"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
 rc=$?
@@ -218,8 +228,13 @@ rc=$?
 git -C "$OPS" remote set-url origin "github-skillshare:owner/repo.git"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
 rc=$?
-[ "$rc" -ne 3 ] && ok "an ssh alias host is accepted" || no "an ssh alias host is accepted (exit $rc)"
-contains "an alias host is reported" "local host alias" "$out"
+[ "$rc" -ne 3 ] && ok "a documented ssh alias host is accepted" || no "a documented ssh alias host is accepted (exit $rc)"
+contains "an alias host is reported" "resolves to" "$out"
+
+git -C "$OPS" remote set-url origin "unknown-alias:owner/repo.git"
+out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 3 ] && ok "an unknown dotless host is refused" || no "an unknown dotless host is refused (exit $rc)"
 
 git -C "$OPS" remote set-url origin "git@github.com:owner/other.git"
 out="$(bash "$BOOTSTRAP" --ops-dir "$OPS" --expect-origin "git@github.com:owner/repo.git" 2>&1)"
@@ -232,6 +247,39 @@ rc=$?
 [ "$rc" -eq 3 ] && ok "a different real host is refused" || no "a different real host is refused (exit $rc)"
 
 git -C "$OPS" remote set-url origin "$ORIGIN_URL"
+
+# a checkout that predates the helper must still be able to pull it: the
+# helper check happens after the fast-forward, never before
+git init --quiet --bare "$TMP/origin2.git"
+git -C "$TMP/origin2.git" symbolic-ref HEAD refs/heads/main
+git init --quiet "$TMP/work2"
+git -C "$TMP/work2" symbolic-ref HEAD refs/heads/main
+printf 'old checkout\n' > "$TMP/work2/README.md"
+git -C "$TMP/work2" add -A
+git -C "$TMP/work2" commit --quiet -m "before the helper existed"
+old_sha="$(git -C "$TMP/work2" rev-parse HEAD)"
+git -C "$TMP/work2" remote add origin "$TMP/origin2.git"
+git -C "$TMP/work2" push --quiet origin HEAD:refs/heads/main
+git clone --quiet "$TMP/origin2.git" "$HOME_DIR/src/ops2"
+mkdir -p "$TMP/work2/scripts"
+cp "$WORK/scripts/agent-workstation-refresh.sh" "$TMP/work2/scripts/agent-workstation-refresh.sh"
+git -C "$TMP/work2" add -A
+git -C "$TMP/work2" commit --quiet -m "add the helper"
+git -C "$TMP/work2" push --quiet origin HEAD:refs/heads/main
+# put the checkout back to the commit that has no helper
+git -C "$HOME_DIR/src/ops2" reset --quiet --hard "$old_sha"
+[ -f "$HOME_DIR/src/ops2/scripts/agent-workstation-refresh.sh" ] \
+	&& no "the stale checkout has no helper yet" || ok "the stale checkout has no helper yet"
+: > "$BOOTSTRAP_TEST_MARKER"
+out="$(bash "$BOOTSTRAP" --ops-dir "$HOME_DIR/src/ops2" --expect-origin "$TMP/origin2.git" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "a checkout without the helper pulls it and runs" || no "a checkout without the helper pulls it and runs (exit $rc)"
+contains "the pulled helper reports DONE" "DONE" "$out"
+if [ -s "$BOOTSTRAP_TEST_MARKER" ]; then
+	ok "the helper pulled by the update ran"
+else
+	no "the helper pulled by the update ran"
+fi
 
 # the public entry must never reach another host: look for these commands in
 # command position, not in prose
